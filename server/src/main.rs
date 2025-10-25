@@ -10,7 +10,7 @@ use std::path::Path as StdPath;
 use axum::{
     extract::{Path, State, Query},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Html},
     routing::{get, post, put, delete},
     Router,
     body::Body,
@@ -211,6 +211,8 @@ async fn read_file(
     };
 
     fs.change_dir("/").await.ok();
+    match fs.read_file_stream(&path).await {
+        Ok(body) => {(StatusCode::OK, [(header::CONTENT_TYPE, "application/octet-stream")], body).into_response()},
     match fs.read_file_stream(&path).await {
         Ok(body) => {(StatusCode::OK, [(header::CONTENT_TYPE, "application/octet-stream")], body).into_response()},
         Err(e) if e.contains("not found") => (StatusCode::NOT_FOUND, e).into_response(),

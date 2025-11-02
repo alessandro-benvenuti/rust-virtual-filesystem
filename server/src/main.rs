@@ -69,11 +69,10 @@ async fn main()-> SqlResult<()> {
 }
 
 // function to create the file system
-async fn create_user_filesystem(username: &str, connection: Arc<Mutex<Connection>>) -> Result<FileSystem, String> {
+async fn create_user_filesystem(username: &str, userid: i32, connection: Arc<Mutex<Connection>>) -> Result<FileSystem, String> {
     let user_path = format!("remote-fs/{}", username);
-    let mut fs = FileSystem::from_file_system(&user_path).await;
+    let mut fs = FileSystem::from_file_system(&user_path, connection, userid).await;
     fs.set_side_effects(true);
-    fs.set_database(connection);
     Ok(fs)
 }
 
@@ -119,7 +118,7 @@ async fn login(
     let auth_service = &app_state.auth_service;
     match auth_service.login(req).await {
         Ok(response) => {
-            if let Ok(new_fs) = create_user_filesystem(&response.username, app_state.connection).await {
+            if let Ok(new_fs) = create_user_filesystem(&response.username, response.user_id, app_state.connection).await {
                 // Aggiorna il filesystem nell'AppState
                 let mut fs = app_state.filesystem.lock().await;
                 *fs = Some(new_fs);
@@ -146,7 +145,7 @@ async fn list_dir(
 
     let auth_service = &app_state.auth_service;
 
-    let (_username, user_id) = match extract_user_from_headers(&headers, &auth_service) {
+    let (username, user_id) = match extract_user_from_headers(&headers, &auth_service) {
         Ok((user, id)) => {
             (user, id)
         },
@@ -154,6 +153,20 @@ async fn list_dir(
             return (StatusCode::UNAUTHORIZED, e).into_response();
         },
     };
+
+    // Ricostruisci il filesystem per l'utente ad ogni chiamata
+    match create_user_filesystem(&username, user_id, app_state.connection.clone()).await {
+        Ok(new_fs) => {
+            let mut guard = app_state.filesystem.lock().await;
+            *guard = Some(new_fs);
+        }
+        Err(e) => {
+            // Fallimento nel costruire il FS: ritorna errore interno
+            let msg = format!("Failed to build filesystem for {}: {}", username, e);
+            println!("{}", msg);
+            return (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response();
+        }
+    }
 
     let mut guard = app_state.filesystem.lock().await;
     let fs = match guard.as_mut() {

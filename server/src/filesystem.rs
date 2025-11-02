@@ -441,12 +441,118 @@ impl FileSystem {
         }
     }
 
+    // restituisce il path relativo completo (senza slash iniziale) del nodo, es. "dir/subdir/file"
+    async fn full_path_for_node(&self, node: &FSNode) -> String {
+        // raccoglie i nomi partendo dal nodo e risalendo verso la root
+        let mut parts: Vec<String> = Vec::new();
+
+        // includi il nome del nodo corrente
+        {
+            let g = node.lock().await;
+            let name = g.name().to_string();
+            if !name.is_empty() {
+                parts.push(name);
+            }
+            // il lock viene rilasciato qui
+        }
+
+        // risali la catena dei genitori
+        let mut current_parent = {
+            let g = node.lock().await;
+            g.parent().upgrade()
+        };
+
+        while let Some(p) = current_parent {
+            let g = p.lock().await;
+            let name = g.name().to_string();
+            if !name.is_empty() {
+                parts.insert(0, name);
+            }
+            current_parent = g.parent().upgrade();
+            // guard rilasciato alla fine del blocco
+        }
+
+        parts.join("/")
+    }
+
+    async fn ensure_metadata_for_node(&self, node: &FSNode, user_id: i64, permissions: u16, is_directory: bool) -> Result<(), String> {
+        if let Some(ref db) = self.db_connection {
+            // calcola il percorso completo relativo (senza slash iniziale)
+            let full_path = self.full_path_for_node(node).await;
+            
+            let size_i64: i64 = if is_directory {
+                0
+            } else {
+                // prova a ottenere la size dal file reale
+                let real_path = self.make_real_path(node.clone()).await;
+                match tokio::fs::metadata(&real_path).await {
+                    Ok(meta) => meta.len() as i64,
+                    Err(e) => {
+                        println!("Warning: failed to stat file '{}' at '{}': {:?}", full_path, real_path, e);
+                        0
+                    }
+                }
+                    
+            };
+
+            let conn = db.lock().await;
+            // check existence
+            let mut stmt = match conn.prepare("SELECT COUNT(*) FROM METADATA WHERE path = ?1") {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("DB prepare error for '{}': {:?}", full_path, e);
+                    return Err(format!("DB prepare error: {}", e));
+                }
+            };
+
+            let exists: bool = match stmt.query_row(params![full_path.clone()], |row| Ok(row.get::<_, i32>(0)? > 0)) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("DB query_row error for '{}': {:?}", full_path, e);
+                    return Err(format!("DB query error: {}", e));
+                }
+            };
+
+            if !exists {
+                let now = chrono::Utc::now().to_rfc3339();
+                let user_perms = (permissions >> 6) & 0o7;
+                let group_perms = (permissions >> 3) & 0o7;
+                let others_perms = permissions & 0o7;
+
+                match conn.execute(
+                    "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        full_path,
+                        user_id,
+                        user_perms,
+                        group_perms,
+                        others_perms,
+                        size_i64,
+                        now.clone(),
+                        now,
+                        if is_directory { 1 } else { 0 }
+                    ],
+                ) {
+                    Ok(_) => {
+                        println!("✅ Inserted metadata for '{}'", full_path);
+                    }
+                    Err(e) => {
+                        println!("DB insert error for '{}': {:?}", full_path, e);
+                        return Err(format!("DB insert error: {}", e));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
 
-    pub async fn from_file_system(base_path: &str) -> Self {
+    pub async fn from_file_system(base_path: &str, connection: Arc<Mutex<Connection>>, user_id: i32) -> Self {
         
         let mut fs = FileSystem::new();
         fs.set_real_path(base_path);
+        fs.set_database(connection);
         
         let wdir = WalkDir::new(base_path);
         for entry in wdir.into_iter()
@@ -475,9 +581,9 @@ impl FileSystem {
             let name = entry_path.file_name().unwrap().to_str().unwrap();
             
             if entry_path.is_dir() {
-                fs.make_dir(&head, name).await.unwrap();
+                fs.make_dir(&head, name, user_id, 0o755).await.unwrap();
             } else if entry_path.is_file() {
-                fs.make_file(&head, name).await.unwrap();
+                fs.make_file(&head, name, user_id).await.unwrap();
             }
         }
 
@@ -838,8 +944,7 @@ impl FileSystem {
         }
     }
 
-    pub async fn make_dir(&mut self, path: &str, name: &str) -> Result<(), String>{
-        println!("make dir");
+    pub async fn make_dir(&mut self, path: &str, name: &str, user_id: i32, permissions: u16) -> Result<(), String>{
         let node = if !path.is_empty() && path != "/" {
             self.find(path).await.ok_or_else(|| format!("Directory {} not found", path))?
         } else {
@@ -855,7 +960,7 @@ impl FileSystem {
             }
         };
 
-        // Verifica se esiste già un child con lo stesso nome (no async nella closure)
+        // Verifica se esiste già un child con lo stesso nome
         for child in &children {
             let child_name = { child.lock().await.name().to_string() };
             if child_name == name {
@@ -880,8 +985,13 @@ impl FileSystem {
         {
             let mut lock = node.lock().await;
             if let FSItem::Directory(d) = &mut *lock {
-                d.children.push(new_node);
+                d.children.push(new_node.clone());
             }
+        }
+
+        let full_path = self.full_path_for_node(&new_node).await;
+        if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, permissions, true).await {
+            println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
         }
 
         Ok(())
@@ -898,8 +1008,10 @@ impl FileSystem {
         // Permessi da stringa ottale a numero
         let permissions_octal = u32::from_str_radix(permissions, 8)
             .map_err(|_| format!("Invalid permissions format: {}", permissions))?;
+    
+        let perms_u16 = permissions_octal as u16;
         
-        self.make_dir(path, name).await?;
+        self.make_dir(path, name, user_id as i32, perms_u16).await?;
         
 
         // path completo della directory (path + name)
@@ -918,38 +1030,15 @@ impl FileSystem {
         };
 
         // Salva i metadati nel database
-        if let Some(ref db) = self.db_connection {
-            let conn = db.lock().await;
-            let now = chrono::Utc::now().to_rfc3339();
-            
-            // Decompongo i permessi ottali in user/group/others
-            let user_perms = (permissions_octal >> 6) & 0o7;
-            let group_perms = (permissions_octal >> 3) & 0o7;
-            let others_perms = permissions_octal & 0o7;
-            
-            let result = conn.execute(
-                "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    full_path,
-                    user_id,
-                    user_perms,
-                    group_perms,
-                    others_perms,
-                    0,  // Size 0 per le directory
-                    now.clone(),
-                    now,
-                    1,  // 1 = directory, 0 = file
-                ],
-            );
-            
-            if let Err(e) = result {
-                println!("Warning: Failed to save directory metadata: {}", e);
+        if let Some(node) = self.find(&full_path).await {
+            if let Err(e) = self.ensure_metadata_for_node(&node, user_id, perms_u16, true).await {
+                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
                 return Err(format!("Error: {}", e));
-                // Non blocco l'operazione se il salvataggio metadati fallisce
             } else {
-                println!("✅ Directory metadata saved: path='{}', user_id={}, permissions={}", full_path, user_id, permissions);
+                println!("✅ Directory metadata ensured: path='{}', user_id={}, permissions={}", full_path, user_id, permissions);
             }
+        } else {
+            println!("Warning: created dir '{}' but could not find node to ensure metadata", full_path);
         }
 
         Ok(())
@@ -958,7 +1047,7 @@ impl FileSystem {
     }
 
     // make file method
-    pub async fn make_file(&mut self, path: &str, name: &str) -> Result<(), String> {
+    pub async fn make_file(&mut self, path: &str, name: &str, user_id: i32) -> Result<(), String> {
         if let Some(node) = self.find(path).await {
 
             if self.side_effects {
@@ -977,6 +1066,13 @@ impl FileSystem {
 
             let new_node = Arc::new(Mutex::new(new_file));
             node.lock().await.add(new_node.clone());
+
+            // Ensure metadata exists (default owner 0, perms 0o644)
+            let full_path = self.full_path_for_node(&new_node).await;
+            if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, 0o644, false).await {
+                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
+            }
+
             Ok(())
         }
         else {
@@ -1006,6 +1102,13 @@ impl FileSystem {
 
             let new_node = Arc::new(Mutex::new(new_link));
             node.lock().await.add(new_node.clone());
+
+            // Ensure metadata exists for symlink (store as file type = 0)
+            let full_path = self.full_path_for_node(&new_node).await;
+            if let Err(e) = self.ensure_metadata_for_node(&new_node, 0, 0o644, false).await {
+                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
+            }
+
             Ok(())
         } else {
             return Err(format!("Directory {} not found", path));
@@ -1276,7 +1379,7 @@ impl FileSystem {
                     FSItem::Directory(_) => {
                         drop(lock);
 
-                        self.make_file(path_parent, file_name).await?;
+                        self.make_file(path_parent, file_name, user_id as i32).await?;
 
                         if self.side_effects {
                             let real_path_parent= self.make_real_path(p.clone()).await;
@@ -1412,7 +1515,7 @@ impl FileSystem {
                         drop(lock);
 
                         // Crea il file nel filesystem virtuale
-                        self.make_file(parent_path, file_name).await?;
+                        self.make_file(parent_path, file_name, user_id as i32).await?;
 
                         if self.side_effects {
                             let real_path_parent = self.make_real_path(p.clone()).await;

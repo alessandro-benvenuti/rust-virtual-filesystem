@@ -3,7 +3,6 @@ use client::fuse_mod::RemoteFS;
 use serde::{Deserialize, Serialize};
 use clap::Parser;
 use tokio::{ task};
-
 use std::{env, io::{self, Write}, process, sync::{atomic::{AtomicBool, Ordering}, Arc}, thread, time::Duration};
 use rpassword::read_password;
 use reqwest::Client;
@@ -117,11 +116,8 @@ fn run_filesystem(
             process::exit(0);
         }
     });
-    let options = [
-    MountOption::FSName("remotefs".to_string()),
-    MountOption::MAX_READ(131072), // 128 KiB
-    ];
-    if let Err(e) = fuser::mount2(fs, &mount_clone, options) {
+
+    if let Err(e) = fuser::mount2(fs, &mount_clone, &[]) {
         eprintln!("Errore nel mount: {}", e);
         return ;
     }

@@ -56,7 +56,7 @@ async fn main()-> SqlResult<()> {
         // Stato condiviso
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     println!("Server listening on {}", addr);
     
     axum::serve(
@@ -211,8 +211,6 @@ async fn read_file(
     };
 
     fs.change_dir("/").await.ok();
-    match fs.read_file_stream(&path).await {
-        Ok(body) => {(StatusCode::OK, [(header::CONTENT_TYPE, "application/octet-stream")], body).into_response()},
     match fs.read_file_stream(&path).await {
         Ok(body) => {(StatusCode::OK, [(header::CONTENT_TYPE, "application/octet-stream")], body).into_response()},
         Err(e) if e.contains("not found") => (StatusCode::NOT_FOUND, e).into_response(),

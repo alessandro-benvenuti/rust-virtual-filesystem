@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use users::cache;
+
 pub mod fuse_mod{
 
 use serde::{Deserialize, Serialize};
@@ -7,7 +11,7 @@ use std::collections::HashMap;
 use libc::EIO;
 use chrono::{DateTime};
 use fuser::{FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use std::ffi::OsStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +33,21 @@ fn parse_time(s: &str) -> SystemTime {
     }
 }
 
+#[derive(Clone)]
+pub struct CacheValue{
+    attr: FileAttr,
+    content: Option<Vec<u8>>,
+    valid_until: Instant
+}
+
+impl CacheValue {
+    
+    fn new ( attr:FileAttr, content: Option<Vec<u8>> )-> Self{
+        let valid_until = Instant::now() + Duration::from_secs(300);
+        Self { attr, content, valid_until  }
+    }
+}
+
 pub struct RemoteFS {
     base_url: String,
     token: String,
@@ -39,6 +58,7 @@ pub struct RemoteFS {
     gid: u32,
     write_buffers: HashMap<u64, Vec<u8>>,
     read_buffers: HashMap<u64, Vec<u8>>,
+    cache: HashMap<String, CacheValue>,
 
 }
 
@@ -48,6 +68,7 @@ impl RemoteFS {
         // La root (ino = 1)
         map.insert(1, "".to_string());
         let map_parent = HashMap::new();
+        let cache= HashMap::new();
         Self {
             base_url,
             token,
@@ -58,6 +79,7 @@ impl RemoteFS {
             gid,
             write_buffers: HashMap::new(),
             read_buffers: HashMap::new(),
+            cache,
         }
     }
     
@@ -82,8 +104,27 @@ impl RemoteFS {
     fn get_path(&self, ino: u64) -> Option<String> {
         self.inode_to_path.get(&ino).cloned()
     }
-
+    fn get_cached_value(&mut self, path: String) -> Option<CacheValue> {
+        if let Some(cv) = self.cache.get(&path) {
+            if Instant::now() < cv.valid_until {
+                return Some(cv.clone());
+            } else {
+                self.cache.remove(&path);
+                return None;
+            }
+        }
+        None
+    }
     
+
+    fn set_cached_value(&mut self, path: String, attr: FileAttr, content: Option<Vec<u8>>) {
+        let cv = CacheValue::new(attr, content);
+        self.cache.insert(path, cv);
+    }
+
+    fn remove_cached_value(&mut self, path: String) {
+        self.cache.remove(&path);
+    }
 }
 
 
@@ -106,6 +147,18 @@ impl Filesystem for RemoteFS {
             None => { reply.error(ENOENT); return; }
         };
         println!("execute read {} offset={} size={}", path, offset, size);
+
+        if let Some(cached) = self.get_cached_value(path.clone()) {
+            if let Some(content) = cached.content {
+                let start = offset.max(0) as usize;
+                let end = std::cmp::min(start + size as usize, content.len());
+                if start < content.len() {
+                    reply.data(&content[start..end]);
+                    return;
+                }
+                }
+        }
+
         if let Some(buf) = self.read_buffers.get(&ino) {
             let start = offset.max(0) as usize;
             let end = std::cmp::min(start + size as usize, buf.len());
@@ -151,6 +204,16 @@ impl Filesystem for RemoteFS {
         let path = self.get_path(ino).unwrap_or_default();
         println!("getattr(ino={}, path={})", ino, path);
 
+        let cache_hit= self.get_cached_value(path.clone());
+        if cache_hit.is_some(){
+            let cv= cache_hit.unwrap();
+            println!("--> cache hit for getattr {}", path);
+            reply.attr(&Duration::new(180, 0), &cv.attr);
+            return;
+
+        }else{
+
+       
         if ino == 1 {
             let ts = SystemTime::now();
             let attr = FileAttr {
@@ -204,6 +267,7 @@ impl Filesystem for RemoteFS {
                         flags: 0,
                         blksize: 512,
                     };
+                    self.set_cached_value(path.clone(), attr.clone(), None);
                     reply.attr(&Duration::new(1, 0), &attr);
                 }
                 Err(_) => reply.error(ENOENT),
@@ -217,6 +281,7 @@ impl Filesystem for RemoteFS {
                 reply.error(ENOENT)
             }
         }
+     }
     }
 
     fn readdir(
@@ -279,6 +344,7 @@ impl Filesystem for RemoteFS {
         name: &OsStr,
         reply: ReplyEntry,
     ) {
+        
         let parent_path = self.get_path(parent).unwrap();
         let path = if parent_path == "/" {
             format!("/{}", name.to_str().unwrap())
@@ -304,46 +370,58 @@ impl Filesystem for RemoteFS {
 
         println!("lookup(parent={}, name={:?})", parent, name);
 
-        let client = BlockingClient::new();
-        let token = self.token.clone();
-        let base_url = self.base_url.trim_end_matches('/').to_string();
-        let url = format!("{}/lookup/{}", base_url, path);
+        let cache_hit = self.get_cached_value(path.clone());
+        if cache_hit.is_some(){
+            let cv= cache_hit.unwrap();
+            println!("--> cache hit for lookup {}", path);
+            reply.entry(&Duration::new(180, 0), &cv.attr, 0);
+            return;
 
-        match client.get(&url).bearer_auth(token).send() {
-            Ok(r) if r.status().is_success() => match r.json::<FileInfo>() {
-                Ok(obj) => {
-                    println!("json {:?}", obj);
-                    let kind = if obj.is_directory { FileType::Directory } else { FileType::RegularFile };
-                    let ino = self.register_path(&path);
-                    let ts = parse_time(&obj.modified);
-                    let attr = FileAttr {
-                        ino,
-                        size: obj.size,
-                        blocks: (obj.size / 512).max(1),
-                        atime: ts,
-                        mtime: ts,
-                        ctime: ts,
-                        crtime: ts,
-                        kind,
-                        perm: obj.permissions,
-                        nlink: obj.links,
-                        uid: self.uid,
-                        gid: self.gid,
-                        rdev: 0,
-                        flags: 0,
-                        blksize: 512,
-                    };
-                    reply.entry(&Duration::new(60, 0), &attr, 0);
+        }else{
+
+            
+            let client = BlockingClient::new();
+            let token = self.token.clone();
+            let base_url = self.base_url.trim_end_matches('/').to_string();
+            let url = format!("{}/lookup/{}", base_url, path);
+
+            match client.get(&url).bearer_auth(token).send() {
+                Ok(r) if r.status().is_success() => match r.json::<FileInfo>() {
+                    Ok(obj) => {
+                        println!("json {:?}", obj);
+                        let kind = if obj.is_directory { FileType::Directory } else { FileType::RegularFile };
+                        let ino = self.register_path(&path);
+                        let ts = parse_time(&obj.modified);
+                        let attr = FileAttr {
+                            ino,
+                            size: obj.size,
+                            blocks: (obj.size / 512).max(1),
+                            atime: ts,
+                            mtime: ts,
+                            ctime: ts,
+                            crtime: ts,
+                            kind,
+                            perm: obj.permissions,
+                            nlink: obj.links,
+                            uid: self.uid,
+                            gid: self.gid,
+                            rdev: 0,
+                            flags: 0,
+                            blksize: 512,
+                        };
+                        self.set_cached_value(path.clone(), attr.clone(), None);
+                        reply.entry(&Duration::new(60, 0), &attr, 0);
+                    }
+                    Err(_) => reply.error(ENOENT),
+                },
+                Ok(r) => {
+                    println!("lookup {} returned HTTP {}", url, r.status());
+                    reply.error(ENOENT)
                 }
-                Err(_) => reply.error(ENOENT),
-            },
-            Ok(r) => {
-                println!("lookup {} returned HTTP {}", url, r.status());
-                reply.error(ENOENT)
-            }
-            Err(e) => {
-                println!("HTTP lookup error {}: {}", url, e);
-                reply.error(ENOENT)
+                Err(e) => {
+                    println!("HTTP lookup error {}: {}", url, e);
+                    reply.error(ENOENT)
+                }
             }
         }
     }
@@ -390,6 +468,7 @@ impl Filesystem for RemoteFS {
                     blksize: 512,
                 };
                 // Non crea davvero nulla, ma fa contento il kernel
+                self.set_cached_value(full_path.clone(), attr.clone(), None);
                 reply.entry(&Duration::new(1, 0), &attr, 0);
             }
             _ => {
@@ -445,7 +524,7 @@ impl Filesystem for RemoteFS {
             flags: 0,
             blksize: 512,
         };
-
+        self.set_cached_value(real_path.clone(), attr.clone(), None);
         // Non crea davvero nulla, ma fa contento il kernel
         reply.created(&Duration::new(1, 0), &attr, 0, 0, 0);
     }
@@ -490,6 +569,7 @@ impl Filesystem for RemoteFS {
             flags: 0,
             blksize: 512,
         };
+        self.set_cached_value(path.clone(), attr.clone(), None);
         reply.attr(&Duration::from_secs(30), &attr);
         
     }
@@ -535,6 +615,13 @@ impl Filesystem for RemoteFS {
             match client.put(format!("{}/files/{}", base_url, path)).bearer_auth(token).body(body.clone()).send() {
                 Ok(r) if r.status().is_success() => {
                     self.read_buffers.insert(ino, body.clone());
+                    let cv= self.get_cached_value(path.clone());
+                    if cv.is_some(){
+                        let mut cached= cv.unwrap().clone();
+                        cached.attr.size= body.len() as u64;
+                        self.set_cached_value(path.clone(), cached.attr.clone(), Some(body.clone()));
+                    }
+
                     reply.ok();
                     //NECESSARIO PER VISUALLIZZARE SUBITO I PDF invalidare gli inode
                   //  fuser::notify_inval_inode(mountpoint, ino, 0, 0);
@@ -551,7 +638,7 @@ impl Filesystem for RemoteFS {
     }else{
             reply.ok();
     }
-}
+    }
 
     fn unlink(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         println!("unlink(parent={}, name={:?})", parent, name);
@@ -564,7 +651,10 @@ impl Filesystem for RemoteFS {
         let base_url = self.base_url.trim_end_matches('/').to_string();
 
         match client.delete(format!("{}/files/{}", base_url, full_path)).bearer_auth(token).send() {
-            Ok(r) if r.status().is_success() => reply.ok(),
+            Ok(r) if r.status().is_success() => {
+                self.remove_cached_value(full_path.clone());
+                reply.ok()
+            },
             _ => reply.error(EIO),
         }
     }
@@ -580,7 +670,14 @@ impl Filesystem for RemoteFS {
         let base_url = self.base_url.trim_end_matches('/').to_string();
 
         match client.delete(format!("{}/files{}", base_url, full_path)).bearer_auth(token).send() {
-            Ok(r) if r.status().is_success() => reply.ok(),
+            Ok(r) if r.status().is_success() => {
+                self.remove_cached_value(full_path.clone());
+                // Rimuovi anche tutte le voci nella cache che sono sotto questa directory
+                self.cache.retain(|_, cv| {
+                    !cv.attr.ino.to_string().starts_with(&full_path)
+                });
+                reply.ok()
+            },
             _ => reply.error(EIO),
         }
     }

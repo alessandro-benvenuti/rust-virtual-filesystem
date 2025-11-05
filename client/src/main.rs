@@ -117,8 +117,11 @@ fn run_filesystem(
             process::exit(0);
         }
     });
-
-    if let Err(e) = fuser::mount2(fs, &mount_clone, &[]) {
+    let options = [
+    MountOption::FSName("remotefs".to_string()),
+    MountOption::MAX_READ(131072), // 128 KiB
+    ];
+    if let Err(e) = fuser::mount2(fs, &mount_clone, options) {
         eprintln!("Errore nel mount: {}", e);
         return ;
     }

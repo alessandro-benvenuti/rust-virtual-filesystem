@@ -105,13 +105,35 @@ impl RemoteFS {
         self.inode_to_path.get(&ino).cloned()
     }
 
-    fn remove_path(&mut self, path: String)-> bool {
-        if let Some(ino) = self.path_to_parent.remove(&path) {
-            self.inode_to_path.remove(&ino);
-            true
-        } else {
-            false
+   fn remove_path(&mut self, path: String) -> bool {
+        // trova l'ino corrispondente al path
+        let maybe_ino = self.inode_to_path.iter().find(|(_, p)| *p == &path).map(|(ino, _)| *ino);
+        let ino = match maybe_ino {
+            Some(i) => i,
+            None => return false,
+        };
+
+        // raccogli prima i figli (per evitare borrow mutabile durante l'iterazione)
+        let child_paths: Vec<String> = self
+            .path_to_parent
+            .iter()
+            .filter(|(_, &parent)| parent == ino)
+            .map(|(p, _)| p.clone())
+            .collect();
+
+        // rimuovi la voce principale
+        self.inode_to_path.remove(&ino);
+        self.cache.remove(&path);
+        self.path_to_parent.remove(&path);
+
+        // rimuovi ricorsivamente i figli
+        for child in child_paths {
+            // ignora il risultato; rimozione parziale è comunque utile
+            let _ = self.remove_path(child);
+            self.cache.remove(&child);
         }
+
+        true
     }
 
     fn get_cached_value(&mut self, path: String) -> Option<CacheValue> {
@@ -664,7 +686,6 @@ impl Filesystem for RemoteFS {
         match client.delete(format!("{}/files/{}", base_url, full_path)).bearer_auth(token).send() {
             Ok(r) if r.status().is_success() => {
                 self.remove_path(full_path.clone());
-                self.remove_cached_value(full_path.clone());
                 reply.ok()
             },
             _ => reply.error(EIO),
@@ -686,7 +707,6 @@ impl Filesystem for RemoteFS {
         match client.delete(format!("{}/files{}", base_url, full_path)).bearer_auth(token).send() {
             Ok(r) if r.status().is_success() => {
                 self.remove_path(full_path.clone());
-                self.remove_cached_value(full_path.clone());
                 // Rimuovi anche tutte le voci nella cache che sono sotto questa directory
                 self.cache.retain(|_, cv| {
                     !cv.attr.ino.to_string().starts_with(&full_path)

@@ -149,6 +149,7 @@ impl Filesystem for RemoteFS {
         println!("execute read {} offset={} size={}", path, offset, size);
 
         if let Some(cached) = self.get_cached_value(path.clone()) {
+            println!("--> cache hit for read {}", path);
             if let Some(content) = cached.content {
                 let start = offset.max(0) as usize;
                 let end = std::cmp::min(start + size as usize, content.len());

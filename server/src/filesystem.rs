@@ -518,7 +518,7 @@ impl FileSystem {
                 let user_perms = (permissions >> 6) & 0o7;
                 let group_perms = (permissions >> 3) & 0o7;
                 let others_perms = permissions & 0o7;
-
+                println!("🐻🐻 Inserting metadata for '{}' size: {}", full_path, size_i64);
                 match conn.execute(
                     "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -583,7 +583,7 @@ impl FileSystem {
             if entry_path.is_dir() {
                 fs.make_dir(&head, name, user_id, 0o755).await.unwrap();
             } else if entry_path.is_file() {
-                fs.make_file(&head, name, user_id).await.unwrap();
+                fs.make_file(&head, name, user_id, true).await.unwrap();
             }
         }
 
@@ -1047,7 +1047,7 @@ impl FileSystem {
     }
 
     // make file method
-    pub async fn make_file(&mut self, path: &str, name: &str, user_id: i32) -> Result<(), String> {
+    pub async fn make_file(&mut self, path: &str, name: &str, user_id: i32, ensure: bool) -> Result<(), String> {
         if let Some(node) = self.find(path).await {
 
             if self.side_effects {
@@ -1068,9 +1068,11 @@ impl FileSystem {
             node.lock().await.add(new_node.clone());
 
             // Ensure metadata exists (default owner 0, perms 0o644)
-            let full_path = self.full_path_for_node(&new_node).await;
-            if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, 0o644, false).await {
-                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
+            if ensure{
+                let full_path = self.full_path_for_node(&new_node).await;
+                if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, 0o644, false).await {
+                    println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
+                }
             }
 
             Ok(())
@@ -1315,129 +1317,6 @@ impl FileSystem {
         }
     }
 
-    pub async fn write_file(&mut self, path: &str, content: &str, user_id: i64, permissions: &str) -> Result<(), String> {
-        // NParsing permessi da stringa ottale a numero
-        let permissions_octal = u32::from_str_radix(permissions, 8)
-            .map_err(|_| format!("Invalid permissions format: {}", permissions))?;
-        
-        // Calcolo dimensione del contenuto
-        let content_size = content.len() as i64;
-
-
-        let node = self.find(path).await;
-        if let Some(n) = node {
-
-            let lock = n.lock().await;
-            match &*lock {
-                FSItem::File(_) => {
-                    if self.side_effects {
-                        drop(lock);
-                        let real_path = self.make_real_path(n.clone()).await;
-                        fs::write(&real_path, content).map_err(|e| e.to_string())?;
-
-                        if let Some(ref db) = self.db_connection {
-                            let conn = db.lock().await;
-                            let now = chrono::Utc::now().to_rfc3339();
-                            
-                            let normalized_path = if path == "/" || path == "" {
-                                "".to_string()
-                            } else {
-                                path.trim_start_matches('/').trim_end_matches('/').to_string()
-                            };
-
-                            println!("UPDATE DB on file '{}'", normalized_path);
-                            let result = conn.execute(
-                                "UPDATE METADATA SET size = ?1, last_modified = ?2 WHERE path = ?3",
-                                params![content_size, now, normalized_path], //real_path?
-                            );
-                            
-                            if let Err(e) = result {
-                                println!("Warning: Failed to update file metadata: {}", e);
-                                // Non blocco l'operazione se l'update metadati fallisce
-                            }
-                        }
-                    }
-                    Ok(())
-                },
-                _ => Err(format!("Invalid request, {} is not a file", path)),
-            }
-        } else {
-            //file not found, create it
-            let path_buf = PathBuf::from(path);
-            let path_parent=path_buf.parent().unwrap().to_str().unwrap();
-            let file_name= path_buf.file_name().unwrap().to_str().unwrap();
-
-            // in order to create a file we need to have the write permission on the directory
-            if let Err(e) = self.check_dir_write_permission(path_parent, user_id).await {
-                return Err(e);
-            }
-            
-            let parent= self.find(path_parent).await;
-            if let Some(p)=parent{
-                let lock= p.lock().await;
-                match lock.deref(){
-                    FSItem::Directory(_) => {
-                        drop(lock);
-
-                        self.make_file(path_parent, file_name, user_id as i32).await?;
-
-                        if self.side_effects {
-                            let real_path_parent= self.make_real_path(p.clone()).await;
-                            let real_path= PathBuf::from(&real_path_parent).join(file_name);
-                            fs::write(real_path, content).map_err(|e| e.to_string())?;
-                        }
-
-                        if let Some(ref db) = self.db_connection {
-                            let conn = db.lock().await;
-                            let now = chrono::Utc::now().to_rfc3339();
-                            
-                            // NOTE: Decompongo i permessi ottali in user/group/others
-                            let user_perms = (permissions_octal >> 6) & 0o7;
-                            let group_perms = (permissions_octal >> 3) & 0o7;
-                            let others_perms = permissions_octal & 0o7;
-                            
-                            let normalized_path = if path == "/" || path == "" {
-                                "".to_string()
-                            } else {
-                                path.trim_start_matches('/').trim_end_matches('/').to_string()
-                            };
-
-                            let result = conn.execute(
-                                "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                                params![
-                                    normalized_path,
-                                    user_id,
-                                    user_perms,
-                                    group_perms,
-                                    others_perms,
-                                    content_size,
-                                    now.clone(),
-                                    now,
-                                    0,
-                                ],
-                            );
-                            
-                            if let Err(e) = result {
-                                println!("Warning: Failed to save file metadata: {}", e);
-                                // NOTE: Non blocco l'operazione se il salvataggio metadati fallisce
-                            }
-                        }
-                    },
-                    _ => return Err(format!("Invalid request, {} is not a directory", path_parent)),
-                    //COSA DEVE FARE SE è UN SymLink?
-                    
-                }   
-                
-            }else{
-                return Err(format!("Directory {} not found", path_parent));
-            }
-            Ok(())
-                
-        }
-           
-    }
-
     pub async fn write_file_stream(
         &mut self,
         path: &str,
@@ -1451,9 +1330,17 @@ impl FileSystem {
 
         // Calcolo della dimensione del contenuto (inizialmente 0, verrà aggiornato durante la scrittura)
         let mut content_size = 0;
-
+        
+         let normalized_path = if path == "/" || path == "" {
+                                "".to_string()
+                            } else {
+                                path.trim_start_matches('/').trim_end_matches('/').to_string()
+                            };
+        println!("🐻🐻 path: {}, normalized: {}", path, normalized_path);
         let node = self.find(path);
+        
         if let Some(n) = node.await {
+            println!("🐻🐻 File {} found, updating content", path);
             let lock = n.lock().await;
             match &*lock {
                 FSItem::File(_) => {
@@ -1482,7 +1369,7 @@ impl FileSystem {
                                 path.trim_start_matches('/').trim_end_matches('/').to_string()
                             };
 
-                            println!("UPDATE DB on file '{}'", normalized_path);
+                            println!("UPDATE DB on file '{}' CONTENT SIZE: {}", normalized_path, content_size);
                             let result = conn.execute(
                                 "UPDATE METADATA SET size = ?1, last_modified = ?2 WHERE path = ?3",
                                 params![content_size, now, normalized_path],
@@ -1503,7 +1390,7 @@ impl FileSystem {
             let path_buf = PathBuf::from(path);
             let parent_path = path_buf.parent().unwrap().to_str().unwrap();
             let file_name = path_buf.file_name().unwrap().to_str().unwrap();
-
+            println!("🐻🐻 File {} not found, creating new file", path);
             // Controlla i permessi di scrittura sulla directory parent
             self.check_dir_write_permission(parent_path, user_id).await?;
 
@@ -1515,7 +1402,7 @@ impl FileSystem {
                         drop(lock);
 
                         // Crea il file nel filesystem virtuale
-                        self.make_file(parent_path, file_name, user_id as i32).await?;
+                        self.make_file(parent_path, file_name, user_id as i32, false).await?;
 
                         if self.side_effects {
                             let real_path_parent = self.make_real_path(p.clone()).await;
@@ -1547,6 +1434,7 @@ impl FileSystem {
                             } else {
                                 path.trim_start_matches('/').trim_end_matches('/').to_string()
                             };
+                            println!("🐻🐻🐻🐻 INSERT DB on file '{}' CONTENT SIZE: {}", normalized_path, content_size);
 
                             let result = conn.execute(
                                 "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)

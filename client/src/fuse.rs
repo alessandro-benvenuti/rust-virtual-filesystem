@@ -608,7 +608,7 @@ impl Filesystem for RemoteFS {
             flags: 0,
             blksize: 512,
         };
-        self.set_cached_value(path.clone(), attr.clone(), None);
+        self.set_cached_value(path.clone(), attr, None);
         reply.attr(&Duration::from_secs(30), &attr);
         
     }
@@ -723,7 +723,124 @@ impl Filesystem for RemoteFS {
         }
     }
 
-    
+    fn rename(
+        &mut self,
+        _req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        newparent: u64,
+        newname: &OsStr,
+        _flags: u32,
+        reply: ReplyEmpty,
+    ) {
+        // costruisci i path coerenti con il resto del codice (root può essere "")
+        let parent_path = self.get_path(parent).unwrap_or_default();
+        let newparent_path = self.get_path(newparent).unwrap_or_default();
+
+        let old_path = if parent_path.is_empty() {
+            format!("/{}", name.to_string_lossy())
+        } else {
+            format!("{}/{}", parent_path, name.to_string_lossy())
+        };
+        let new_path = if newparent_path.is_empty() {
+            format!("/{}", newname.to_string_lossy())
+        } else {
+            format!("{}/{}", newparent_path, newname.to_string_lossy())
+        };
+
+        println!("rename: {} -> {}", old_path, new_path);
+
+        // tentativo server-side: fallback a copy+delete se non esiste endpoint move
+        let client = BlockingClient::new();
+        let token = self.token.clone();
+        let base = self.base_url.trim_end_matches('/').to_string();
+        let src_url = format!("{}/files{}", base, old_path);
+        let dst_url = format!("{}/files{}", base, new_path);
+
+        // 1) leggi sorgente
+        let data = match client.get(&src_url).bearer_auth(token.clone()).send() {
+            Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
+                match r.bytes() {
+                    Ok(b) => b.to_vec(),
+                    Err(e) => {
+                        println!("read bytes error during rename: {}", e);
+                        reply.error(EIO);
+                        return;
+                    }
+                }
+            }
+            Ok(r) => {
+                println!("rename GET {} -> {}", src_url, r.status());
+                reply.error(ENOENT);
+                return;
+            }
+            Err(e) => {
+                println!("HTTP GET error during rename {}: {}", src_url, e);
+                reply.error(EIO);
+                return;
+            }
+        };
+
+        // 2) scrivi destinazione
+        match client.put(&dst_url).bearer_auth(token.clone()).body(data.clone()).send() {
+            Ok(r) if r.status().is_success() => { /* ok */ }
+            Ok(r) => {
+                println!("rename PUT {} -> {}", dst_url, r.status());
+                reply.error(EIO);
+                return;
+            }
+            Err(e) => {
+                println!("HTTP PUT error during rename {}: {}", dst_url, e);
+                reply.error(EIO);
+                return;
+            }
+        }
+
+        // 3) delete sorgente (best-effort)
+        let _ = client.delete(&src_url).bearer_auth(token).send();
+
+        // 4) aggiorna mappe locali e buffer/cache
+        // trova inode corrispondente al vecchio path (se esiste)
+        let mut found_ino: Option<u64> = None;
+        for (ino, path) in self.inode_to_path.iter_mut() {
+            if path == &old_path {
+                found_ino = Some(*ino);
+                *path = new_path.clone();
+                break;
+            }
+        }
+
+        // aggiorna path_to_parent
+        if let Some(ino) = found_ino {
+            self.path_to_parent.remove(&old_path);
+            self.path_to_parent.insert(new_path.clone(), newparent);
+
+            // sposta read/write buffers se presenti
+            if let Some(rb) = self.read_buffers.remove(&ino) {
+                self.read_buffers.insert(ino, rb);
+            }
+            if let Some(wb) = self.write_buffers.remove(&ino) {
+                self.write_buffers.insert(ino, wb);
+            }
+
+            // sposta cache entry keyed by path (se presente)
+            if let Some(cv) = self.cache.remove(&old_path) {
+                // aggiorna l'attr.ino se necessario
+                let mut new_cv = cv.clone();
+                new_cv.attr.ino = ino;
+                self.cache.insert(new_path.clone(), new_cv);
+            }
+        } else {
+            // se non avevamo inode locale, registra il nuovo path per future operazioni
+            let _ = self.register_path(&new_path);
+        }
+
+        // opzionale: invalidare cache kernel se disponibile (vedi discussione)
+        // fuser::notify::notify_inval_inode(&self.mountpoint, found_ino.unwrap_or(0), 0, 0);
+
+        reply.ok();
+    }
+
     
 }
 

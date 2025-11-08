@@ -104,6 +104,16 @@ impl RemoteFS {
     fn get_path(&self, ino: u64) -> Option<String> {
         self.inode_to_path.get(&ino).cloned()
     }
+
+    fn remove_path(&mut self, path: String)-> bool {
+        if let Some(ino) = self.path_to_parent.remove(&path) {
+            self.inode_to_path.remove(&ino);
+            true
+        } else {
+            false
+        }
+    }
+
     fn get_cached_value(&mut self, path: String) -> Option<CacheValue> {
         if let Some(cv) = self.cache.get(&path) {
             if Instant::now() < cv.valid_until {
@@ -653,11 +663,14 @@ impl Filesystem for RemoteFS {
 
         match client.delete(format!("{}/files/{}", base_url, full_path)).bearer_auth(token).send() {
             Ok(r) if r.status().is_success() => {
+                self.remove_path(full_path.clone());
                 self.remove_cached_value(full_path.clone());
                 reply.ok()
             },
             _ => reply.error(EIO),
         }
+
+
     }
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
@@ -672,6 +685,7 @@ impl Filesystem for RemoteFS {
 
         match client.delete(format!("{}/files{}", base_url, full_path)).bearer_auth(token).send() {
             Ok(r) if r.status().is_success() => {
+                self.remove_path(full_path.clone());
                 self.remove_cached_value(full_path.clone());
                 // Rimuovi anche tutte le voci nella cache che sono sotto questa directory
                 self.cache.retain(|_, cv| {

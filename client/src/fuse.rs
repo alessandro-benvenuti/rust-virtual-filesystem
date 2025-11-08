@@ -323,6 +323,10 @@ impl Filesystem for RemoteFS {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        println!("⚙️inodes: {:?}", self.inode_to_path);
+        println!("💡paths to parent: {:?}", self.path_to_parent);
+        println!("🧾cache keys: {:?}", self.cache.keys());
+
         let path = match self.get_path(ino) {
             Some(p) => p.clone(),
             None => { reply.error(ENOENT); return; }
@@ -382,6 +386,10 @@ impl Filesystem for RemoteFS {
         } else {
             format!("{}/{}", parent_path, name.to_str().unwrap())
         };
+
+        println!("⚙️inodes: {:?}", self.inode_to_path);
+        println!("💡paths to parent: {:?}", self.path_to_parent);
+        println!("🧾cache keys: {:?}", self.cache.keys());
 
         let name_str = name.to_str().unwrap_or("");
         let is_spurious = name_str.chars().all(|c| c.is_numeric())
@@ -555,7 +563,7 @@ impl Filesystem for RemoteFS {
             flags: 0,
             blksize: 512,
         };
-        self.set_cached_value(real_path.clone(), attr.clone(), None);
+        self.set_cached_value(real_path.clone(), attr, Some(Vec::from([0u8; 1])));
         // Non crea davvero nulla, ma fa contento il kernel
         reply.created(&Duration::new(1, 0), &attr, 0, 0, 0);
     }

@@ -107,11 +107,7 @@ impl RemoteFS {
 
    fn remove_path(&mut self, path: String) -> bool {
         // trova l'ino corrispondente al path
-        let maybe_ino = self.inode_to_path.iter().find(|(_, p)| *p == &path).map(|(ino, _)| *ino);
-        let ino = match maybe_ino {
-            Some(i) => i,
-            None => return false,
-        };
+        let ino = self.register_path(path);
 
         // raccogli prima i figli (per evitare borrow mutabile durante l'iterazione)
         let child_paths: Vec<String> = self
@@ -125,12 +121,14 @@ impl RemoteFS {
         self.inode_to_path.remove(&ino);
         self.cache.remove(&path);
         self.path_to_parent.remove(&path);
+        println!("Rimosso path {} con ino {}", path, ino);
 
         // rimuovi ricorsivamente i figli
         for child in child_paths {
             // ignora il risultato; rimozione parziale è comunque utile
             let _ = self.remove_path(child);
             self.cache.remove(&child);
+            println!("Rimosso path figlio {} di {}", child, path);
         }
 
         true

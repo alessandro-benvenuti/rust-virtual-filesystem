@@ -57,7 +57,7 @@ pub struct RemoteFS {
     uid: u32,
     gid: u32,
     write_buffers: HashMap<u64, Vec<u8>>,
-    read_buffers: HashMap<u64, Vec<u8>>,
+    //read_buffers: HashMap<u64, Vec<u8>>,
     cache: HashMap<String, CacheValue>,
 
 }
@@ -78,7 +78,7 @@ impl RemoteFS {
             uid,
             gid,
             write_buffers: HashMap::new(),
-            read_buffers: HashMap::new(),
+            //read_buffers: HashMap::new(),
             cache,
         }
     }
@@ -179,7 +179,7 @@ impl Filesystem for RemoteFS {
         println!("execute read {} offset={} size={}", path, offset, size);
 
         if let Some(cached) = self.get_cached_value(path.clone()) {
-            println!("--> cache hit for read {}", path);
+            println!("-->📚 cache hit for read path: {}, ino: {}, size: {}", path, cached.attr.ino, cached.attr.size);
             if let Some(content) = cached.content {
                 let start = offset.max(0) as usize;
                 let end = std::cmp::min(start + size as usize, content.len());
@@ -190,16 +190,16 @@ impl Filesystem for RemoteFS {
                 }
         }
 
-        if let Some(buf) = self.read_buffers.get(&ino) {
-            let start = offset.max(0) as usize;
-            let end = std::cmp::min(start + size as usize, buf.len());
-            if start >= buf.len() {
-                reply.data(&[]);
-            } else {
-                reply.data(&buf[start..end]);
-            }
-            return;
-        }
+        // if let Some(buf) = self.read_buffers.get(&ino) {
+        //     let start = offset.max(0) as usize;
+        //     let end = std::cmp::min(start + size as usize, buf.len());
+        //     if start >= buf.len() {
+        //         reply.data(&[]);
+        //     } else {
+        //         reply.data(&buf[start..end]);
+        //     }
+        //     return;
+        // }
         let client = BlockingClient::new();
         let token = self.token.clone();
         let base_url = self.base_url.trim_end_matches('/').to_string();
@@ -238,8 +238,8 @@ impl Filesystem for RemoteFS {
         let cache_hit= self.get_cached_value(path.clone());
         if cache_hit.is_some(){
             let cv= cache_hit.unwrap();
-            println!("--> cache hit for getattr {}", path);
-            reply.attr(&Duration::new(180, 0), &cv.attr);
+            println!("--> cache hit for read path: {}, ino: {}, size: {}", path, cv.attr.ino, cv.attr.size);
+            reply.attr(&Duration::new(10, 0), &cv.attr);
             return;
 
         }else{
@@ -264,7 +264,7 @@ impl Filesystem for RemoteFS {
                 flags: 0,
                 blksize: 512,
             };
-            reply.attr(&Duration::new(180, 0), &attr);
+            reply.attr(&Duration::new(10, 0), &attr);
             return;
         }
 
@@ -299,7 +299,7 @@ impl Filesystem for RemoteFS {
                         blksize: 512,
                     };
                     self.set_cached_value(path.clone(), attr.clone(), None);
-                    reply.attr(&Duration::new(1, 0), &attr);
+                    reply.attr(&Duration::new(10, 0), &attr);
                 }
                 Err(_) => reply.error(ENOENT),
             },
@@ -387,9 +387,9 @@ impl Filesystem for RemoteFS {
             format!("{}/{}", parent_path, name.to_str().unwrap())
         };
 
-        println!("⚙️inodes: {:?}", self.inode_to_path);
-        println!("💡paths to parent: {:?}", self.path_to_parent);
-        println!("🧾cache keys: {:?}", self.cache.keys());
+        // println!("⚙️inodes: {:?}", self.inode_to_path);
+        // println!("💡paths to parent: {:?}", self.path_to_parent);
+        // println!("🧾cache keys: {:?}", self.cache.keys());
 
         let name_str = name.to_str().unwrap_or("");
         let is_spurious = name_str.chars().all(|c| c.is_numeric())
@@ -407,13 +407,13 @@ impl Filesystem for RemoteFS {
             return;
         }
 
-        println!("lookup(parent={}, name={:?})", parent, name);
+        println!("👀👀lookup(parent={}, name={:?})", parent, name);
 
         let cache_hit = self.get_cached_value(path.clone());
         if cache_hit.is_some(){
             let cv= cache_hit.unwrap();
-            println!("--> cache hit for lookup {}", path);
-            reply.entry(&Duration::new(180, 0), &cv.attr, 0);
+            println!("--> cache hit for lookup 👀 path: {}, ino: {}, size: {}", path, cv.attr.ino, cv.attr.size);
+            reply.entry(&Duration::new(10, 0), &cv.attr, 0);
             return;
 
         }else{
@@ -448,8 +448,9 @@ impl Filesystem for RemoteFS {
                             flags: 0,
                             blksize: 512,
                         };
+                        println!("--> caching lookup for path: {}, ino: {}, size: {}", path, attr.ino, attr.size);
                         self.set_cached_value(path.clone(), attr.clone(), None);
-                        reply.entry(&Duration::new(60, 0), &attr, 0);
+                        reply.entry(&Duration::new(10, 0), &attr, 0);
                     }
                     Err(_) => reply.error(ENOENT),
                 },
@@ -507,6 +508,7 @@ impl Filesystem for RemoteFS {
                     blksize: 512,
                 };
                 // Non crea davvero nulla, ma fa contento il kernel
+                println!("--> caching mkdir for path: {}, ino: {}, size: {}", full_path, attr.ino, attr.size);
                 self.set_cached_value(full_path.clone(), attr.clone(), None);
                 reply.entry(&Duration::new(1, 0), &attr, 0);
             }
@@ -563,7 +565,8 @@ impl Filesystem for RemoteFS {
             flags: 0,
             blksize: 512,
         };
-        self.set_cached_value(real_path.clone(), attr, Some(Vec::from([0u8; 1])));
+        println!("🔖--> caching CREATE for path: {}, ino: {}, size: {}", real_path, attr.ino, attr.size);
+        self.set_cached_value(real_path.clone(), attr, Some(Vec::from([0u8;0])));
         // Non crea davvero nulla, ma fa contento il kernel
         reply.created(&Duration::new(1, 0), &attr, 0, 0, 0);
     }
@@ -589,6 +592,14 @@ impl Filesystem for RemoteFS {
         let path= self.get_path(ino).unwrap();
         println!("setattr(ino={}, size={:?}, path={})", ino, size, path);
         
+        let cv= self.get_cached_value(path.clone());
+        if cv.is_some(){
+            let hit= cv.unwrap();
+            println!("--> updating cache after SETATTR for path: {}, ino: {}, size: {}", path, hit.attr.ino, hit.attr.size);
+            
+            reply.attr(&Duration::from_secs(10), &hit.attr);
+            return;
+        };
         //atributi dummy
         let ts = SystemTime::now();
         let mut attr = FileAttr {
@@ -609,7 +620,7 @@ impl Filesystem for RemoteFS {
             blksize: 512,
         };
         self.set_cached_value(path.clone(), attr, None);
-        reply.attr(&Duration::from_secs(30), &attr);
+        reply.attr(&Duration::from_secs(10), &attr);
         
     }
 
@@ -653,12 +664,16 @@ impl Filesystem for RemoteFS {
             
             match client.put(format!("{}/files/{}", base_url, path)).bearer_auth(token).body(body.clone()).send() {
                 Ok(r) if r.status().is_success() => {
-                    self.read_buffers.insert(ino, body.clone());
+                    //read_buffer ERRORE
+
+                    // self.read_buffers.insert(ino, body.clone());
                     let cv= self.get_cached_value(path.clone());
                     if cv.is_some(){
                         let mut cached= cv.unwrap().clone();
+                        
                         cached.attr.size= body.len() as u64;
                         self.set_cached_value(path.clone(), cached.attr.clone(), Some(body.clone()));
+                        println!("--> updating cache after FLUSH for path: {}, ino: {}, size: {}", path, cached.attr.ino, cached.attr.size);
                     }
 
                     reply.ok();
@@ -748,7 +763,7 @@ impl Filesystem for RemoteFS {
             format!("{}/{}", newparent_path, newname.to_string_lossy())
         };
 
-        println!("rename: {} -> {}", old_path, new_path);
+        println!("\n 🏃🏃RENAME/MOVE: {} -> {}", old_path, new_path);
 
         if new_path.starts_with("/.Trash") {
             println!("Delete");
@@ -849,9 +864,9 @@ impl Filesystem for RemoteFS {
             self.path_to_parent.insert(new_path.clone(), newparent);
 
             // sposta read/write buffers se presenti
-            if let Some(rb) = self.read_buffers.remove(&ino) {
-                self.read_buffers.insert(ino, rb);
-            }
+            // if let Some(rb) = self.read_buffers.remove(&ino) {
+            //     self.read_buffers.insert(ino, rb);
+            // }
             if let Some(wb) = self.write_buffers.remove(&ino) {
                 self.write_buffers.insert(ino, wb);
             }

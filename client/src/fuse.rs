@@ -765,39 +765,6 @@ impl Filesystem for RemoteFS {
 
         println!("\n 🏃🏃RENAME/MOVE: {} -> {}", old_path, new_path);
 
-        if new_path.starts_with("/.Trash") {
-            println!("Delete");
-            let client = BlockingClient::new();
-            let token = self.token.clone();
-            let base_url = self.base_url.trim_end_matches('/').to_string();
-
-            match client.delete(format!("{}/files{}", base_url, old_path)).bearer_auth(token).send() {
-            Ok(r) if r.status().is_success() => {
-                self.remove_path(full_path.clone());
-                // Rimuovi anche tutte le voci nella cache che sono sotto questa directory
-                self.cache.retain(|_, cv| {
-                    !cv.attr.ino.to_string().starts_with(&full_path)
-                });
-                reply.ok()
-            },
-            _ => reply.error(EIO),
-            }
-            
-      
-            match client.delete(format!("{}/files{}", base_url, new_path)).bearer_auth(token).send() {
-            Ok(r) if r.status().is_success() => {
-                self.remove_path(full_path.clone());
-                // Rimuovi anche tutte le voci nella cache che sono sotto questa directory
-                self.cache.retain(|_, cv| {
-                    !cv.attr.ino.to_string().starts_with(&full_path)
-                });
-                reply.ok()
-            },
-            _ => reply.error(EIO),
-        }
-            return;
-        }
-
         // tentativo server-side: fallback a copy+delete se non esiste endpoint move
         let client = BlockingClient::new();
         let token = self.token.clone();

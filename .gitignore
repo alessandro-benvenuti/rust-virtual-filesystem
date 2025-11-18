@@ -21,7 +21,8 @@ server/target/debug
 
 # File di test temporanei
 tests/tmp/
-**/tmp/
+**/tmp/myfs.out
+**/tmp/myfs.err
 
 # Blocca file lock solo se non vuoi versionarlo (opzionale)
 # Cargo.lock

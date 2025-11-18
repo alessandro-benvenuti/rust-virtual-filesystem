@@ -279,11 +279,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("avvio demone");
               
-                let stdout = File::create("/tmp/myfs.out").unwrap();
-                let stderr = File::create("/tmp/myfs.err").unwrap();
+                let stdout = File::create("./tmp/myfs.out").unwrap();
+                let stderr = File::create("./tmp/myfs.err").unwrap();
 
                 let daemonize = Daemonize::new()
-                    .pid_file("/tmp/myfs.pid") // dove salvare il PID
+                    .pid_file("./tmp/myfs.pid") // dove salvare il PID
                     .chown_pid_file(true)
                     .working_directory(env::current_dir().expect("Cannot get current directory")) // directory di lavoro 
                     .stdout(stdout)

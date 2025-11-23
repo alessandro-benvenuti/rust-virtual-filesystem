@@ -1,203 +1,370 @@
-# progetto_rust_filesystem
+# Remote FileSystem in Rust
 
-# Overview
-This project aims to implement a remote file system client in Rust that presents a local mount point, mirroring the struc
-file system hosted on a remote server. The file system should support transparent read and write access to remote file
-# Goals
-- Provide a local file system interface that interacts with a remote storage backend.
-- Enable standard file operations (read, write, create, delete, etc.) on remote files as if they were local.
-- Ensure compatibility with Linux systems.
-- Optionally support Windows and macOS with best-effort 
-# Funtional Requirements
-- Mount a virtual file system to a local path (e.g., /mnt/remote-fs )
-- Display directories and files from a remote source
-Read files from the remote server
-- Write modified files back to the remote server
-- Support creation, deletion, and renaming of files and directories
-- Maintain file attributes such as size, timestamps, and permissions (as feasible)
-- Run as a background daemon process that handles filesystem operations continuously
+A FUSE-based remote filesystem implementation in Rust that provides transparent access to files stored on a remote server through a local mount point.
 
-# Server Interface and Implementation 
-- The server should offer a set RESTful API for file operations:
-GET /list/<path> – List directory contents
-responce json let file_info = FileInfo::new(
-                        permissions,
-                        owner,
-                        size,
-                        formatted_time,
-                        file_name.clone(),
-                        is_directory,
-                    );
-GET /files/<path> – Read file contents
-PUT /files/<path> – Write file contents
-POST /mkdir/<path> – Create directory
-DELETE /files/<path> – Delete file or directory
-GET /lookup/<path>
-- The server can be implemented using any language or framework, but should be RESTful and stateless.
+## 🎯 Features
 
-# Caching
-- Optional local caching layer for performance
-- Configurable cache invalidation strategy (e.g., TTL or LRU)
+- **FUSE Integration**: Mount remote filesystem as a local directory on Linux
+- **RESTful API**: Stateless server with JWT authentication
+- **User Management**: Multi-user support with authentication and authorization
+- **File Permissions**: Unix-style permission system (owner, group, others)
+- **Streaming Support**: Efficient handling of large files (100MB+) using streams
+- **Caching**: Client-side caching for improved performance
+- **Daemon Mode**: Background execution with signal handling
+- **Database Backend**: SQLite for metadata and user management
 
-# Performance
-- Support for large files (100MB+) with streaming read/write
-- Reasonable latency (<500ms for operations under normal network conditions)
+## 🏗️ Architecture
 
-# CHIAMATE API
+### Server (`/server`)
+- **Framework**: Axum (async web framework)
+- **Authentication**: JWT tokens with bcrypt password hashing
+- **Database**: SQLite (rusqlite) for user and file metadata
+- **Virtual Filesystem**: In-memory tree structure mirroring physical filesystem
 
-## List directory contents
-curl -X GET http://127.0.0.1:8080/list/ \
-  -H "Authorization: Bearer $TOKEN_ALICE"
+### Client (`/client`)
+- **FUSE**: Linux FUSE implementation for filesystem operations
+- **Cache**: TTL-based caching (300s default) for attributes and content
+- **Daemon Support**: Background execution using `daemonize` crate
 
-## read file content 
-curl -X GET  http://127.0.0.1:8080/files/nuova_dir/dir_0/text.txt \
-  -H "Authorization: Bearer $TOKEN_ALICE"
+## 📋 Requirements
 
-## write file content
-curl -X PUT http://127.0.0.1:8080/files/alice_secret.txt \
-  -H "Authorization: Bearer $TOKEN_ALICE" \
-  -d "This is Alice's private file!"
+### Server
+- Rust 1.70+
+- SQLite3
 
-## make dir 
-curl -X POST http://127.0.0.1:8080/mkdir/alice_documents \
-  -H "Authorization: Bearer $TOKEN_ALICE"
-  
-## delete 
-curl -X DELETE http://127.0.0.1:8080/files/alice_diary.txt \
-  -H "Authorization: Bearer $TOKEN_ALICE"
+### Client
+- Rust 1.70+
+- FUSE3 (`fusermount3`)
+- Linux operating system
 
-## register user
+## 🚀 Installation
+
+### 1. Clone the repository
+```bash
+git clone <repository-url>
+cd progetto_rust_filesystem
+```
+
+### 2. Install FUSE (Linux)
+```bash
+# Ubuntu/Debian
+sudo apt-get install fuse3 libfuse3-dev
+
+# Fedora/RHEL
+sudo dnf install fuse3 fuse3-devel
+```
+
+### 3. Build the project
+```bash
+# Build server
+cd server
+cargo build --release
+
+# Build client
+cd ../client
+cargo build --release
+```
+
+## 🎮 Usage
+
+### Starting the Server
+
+```bash
+cd server
+cargo run --release
+```
+
+Server will start on `http://0.0.0.0:8080` by default.
+
+### Starting the Client
+
+#### Foreground Mode (Debug)
+```bash
+cd client
+cargo run --release
+```
+
+#### Daemon Mode
+```bash
+cd client
+cargo run --release -- --daemon
+```
+
+#### Custom Server Configuration
+```bash
+# Remote server
+cargo run -- --server-ip 192.168.1.100 --server-port 9000
+
+# With daemon mode
+cargo run -- --daemon --server-ip 192.168.1.100
+```
+
+### First-time Setup
+
+1. **Registration** (optional if no account exists)
+   - The client will prompt for username and password
+   - User will be created both on server and locally (requires sudo)
+
+2. **Login**
+   - Enter credentials
+   - Client receives JWT token for subsequent requests
+
+3. **Mount**
+   - Filesystem mounts at `./mount` directory
+   - Access files like a normal directory
+
+## 📡 API Reference
+
+### Authentication Endpoints
+
+#### Register User
+```bash
 curl -X POST http://127.0.0.1:8080/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username": "alice", "password": "password123"}'
+```
 
-## login user
+#### Login
+```bash
 curl -X POST http://127.0.0.1:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "alice", "password": "password123"}'
+```
 
-## in order to save the token
+**Response:**
+```json
+{
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+  "username": "alice",
+  "user_id": 1,
+  "expires_in": 3600
+}
+```
+
+#### Save Token (Bash)
+```bash
 TOKEN_ALICE=$(curl -s -X POST http://127.0.0.1:8080/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username": "alice", "password": "password123"}' | \
   grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+```
 
+### File Operations
 
-  ### PER WINDOWS 
-  Invoke-WebRequest `
->>   -Uri "http://127.0.0.1:8080/auth/register" `
->>   -Method POST `
->>   -Headers @{ "Content-Type" = "application/json" } `
->>   -Body '{"username": "alice", "password": "password123"}'
-## write file
-Invoke-RestMethod `
-  -Uri "http://127.0.0.1:8080/files/alice_secret.txt" `
-  -Method PUT `
-  -Headers @{ "Authorization" = "Bearer ALICE_TOKEN_HERE" } `
-  -Body "This is Alice's private file!"
+#### List Directory Contents
+```bash
+curl -X GET http://127.0.0.1:8080/list/ \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+```
 
-## write a big file using streams (LOTR.pdf)
-cat LOTR.pdf | curl -v --http1.1 -X PUT -H "Authorization: Bearer ${TOKEN_ALICE}" -H "Content-Type: text/plain; charset=utf-8" "http://127.0.0.1:8080/files/LOTR.pdf?permissions=644" --data-binary @-
+**Response:**
+```json
+[
+  {
+    "permissions": 493,
+    "links": 1,
+    "owner": "alice",
+    "group": "users",
+    "size": 1024,
+    "modified": "Dec  7 14:30",
+    "name": "secret.txt",
+    "is_directory": false
+  }
+]
+```
 
+#### Read File
+```bash
+curl -X GET http://127.0.0.1:8080/files/secret.txt \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+```
 
-## read a big file usign streams (LOTR.pdf)
-curl -fSsv -H "Authorization: Bearer ${TOKEN_ALICE}" "http://127.0.0.1:8080/files/LOTR.pdf" -o LOTR.pdf
+#### Write File
+```bash
+# Simple text
+curl -X PUT http://127.0.0.1:8080/files/secret.txt \
+  -H "Authorization: Bearer $TOKEN_ALICE" \
+  -d "This is Alice's private file!"
 
-  
+# With custom permissions
+curl -X PUT "http://127.0.0.1:8080/files/secret.txt?permissions=600" \
+  -H "Authorization: Bearer $TOKEN_ALICE" \
+  -d "Highly confidential!"
+```
 
-## test
-Run on one terminal "cargo run"
-Run on the other terminal "cargo test --test api_test"
+#### Upload Large File (Stream)
+```bash
+cat large_file.pdf | curl -v --http1.1 -X PUT \
+  -H "Authorization: Bearer $TOKEN_ALICE" \
+  -H "Content-Type: application/octet-stream" \
+  "http://127.0.0.1:8080/files/large_file.pdf?permissions=644" \
+  --data-binary @-
+```
 
+#### Download Large File (Stream)
+```bash
+curl -fSsv -H "Authorization: Bearer $TOKEN_ALICE" \
+  "http://127.0.0.1:8080/files/large_file.pdf" \
+  -o downloaded.pdf
+```
 
+#### Create Directory
+```bash
+curl -X POST "http://127.0.0.1:8080/mkdir/documents?permissions=755" \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+```
 
-## note
-FILE:
-| File_ID* | Path                      | User_ID | User_Permissions | Group_Permissions | Others_Permissions | Size (bytes) | Created_At           | Last_modified         |
-|----------|---------------------------|---------|------------------|-------------------|--------------------|--------------|----------------------|----------------------|
-| 1        | alice/alice_secret.txt    | 1       | rw-              | r--               | ---                | 1024         | 2024-05-01 10:00:00  | 2024-06-01 09:00:00  |
-| 2        | bob/bob_diary.txt         | 2       | rw-              | r--               | ---                | 2048         | 2024-05-02 11:00:00  | 2024-06-02 08:30:00  |
-| 3        | shared/group_notes.txt    | 1       | rw-              | rw-               | r--                | 4096         | 2024-05-03 12:00:00  | 2024-06-03 07:45:00  |
-| 4        | charlie/charlie_todo.txt  | 3       | rw-              | r--               | ---                | 512          | 2024-05-04 13:00:00  | 2024-06-04 07:00:00  |
-| 5        | public/readme.txt         | 4       | rw-              | rw-               | r--                | 256          | 2024-05-05 14:00:00  | 2024-06-05 06:30:00  |
+#### Delete File/Directory
+```bash
+curl -X DELETE http://127.0.0.1:8080/files/old_file.txt \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+```
 
-USER:
-| User_ID* | Username | Password                          |
-|----------|----------|-----------------------------------|
-| 1        | alice    | $2b$12$abcdehashedalicepassword   |
-| 2        | bob      | $2b$12$xyz12hashedbobpassword     |
-| 3        | charlie  | $2b$12$mnopqhashedcharliepassword |
-| 4        | dave     | $2b$12$rstuvhasheddavepassword    |
+#### Lookup Item Metadata
+```bash
+curl -X GET http://127.0.0.1:8080/lookup/documents/report.pdf \
+  -H "Authorization: Bearer $TOKEN_ALICE"
+```
 
-> Le password sono hashate.
+## 🧪 Testing
 
-
-
-
-#### CLIENT
-
-- list
-
-ls 
-1. getattr <- info su directory corrente
-2. readdir 
-3. lookup <- su ogni entry restituita per mostrre gli attributi
-
-ls {subdir}
-1. lookup <- deve risolvere subdir 
-2. getattr <- controlla se esiste e che tipo di file 
-3. readdir 
-4. lookup risultato <- per ogni entry
-
-cat file.txt
-
-1.	lookup(parent=1, name="file.txt")	Risolvi il file.
-2.	getattr(ino=file_ino)	Ottieni attributi.
-3.	open(ino=file_ino)	Apre il file.
-4.	read(ino=file_ino, offset, size)	Legge i dati (una o più volte).
-5.	release(ino=file_ino)	Chiude il file.
-
-echo ".." > file.txt
-1. lookup	<- controlla se il file è già noto	chiama /exists?path=pino.txt o restituisci ENOENT
-create	crea solo inode fittizio	non fare nulla sul server
-2. write	<- invia direttamente PUT /files con path e data	il server creerà o aggiornerà il file
-3. getattr	restituisci attributi 
-
-COSE DA FARE 
-- sistemare la write di un file già esistenete <- penso sia un problema di attributi che la fopen dovrebbe verificare
-- fare un file a parte con il RemoteFS per rendere tutto più ordinato
-- cd va implementata? NAVIGARE il fs in generale 
-- problema se faccio login con un altro utente il mount non si "svuota" le cartelle restano 
-
-PROBLEMI 
-
-- SERVER se ci sono le cartelle già presenti il server quando fa il mount non scrive i file coi permessi nel db e non funzionano
-
-COME TESTARE:
-**/server cargo run 
-**/client cargo run 
-**/client/mount <op. filesystem>
-
-## DAEMON 
-
-- vedere se esiste gia un pid attivo
-ps -p $(cat /tmp/myfs.pid)
-
-- uccidere demone in backend
-kill <PID>
-
-- vedere gli errori
-cat /tmp/myfs.err
-
-# Locale (default 127.0.0.1)
+### Automated Tests
+```bash
+# Terminal 1: Start server
+cd server
 cargo run
 
-# Con IP remoto
-cargo run -- --server-ip 172.20.10.12
+# Terminal 2: Run tests
+cd server
+cargo test --test api_test
+```
 
-# Con daemon mode
-cargo run -- --daemon --server-ip 172.20.10.12
+### Manual Testing via FUSE Mount
 
-# Con porta personalizzata
-cargo run -- --server-ip 192.168.1.100 --server-port 9000
+```bash
+# List files
+ls -la mount/
 
+# Create directory
+mkdir mount/test_dir
+
+# Write file
+echo "Hello World" > mount/test.txt
+
+# Read file
+cat mount/test.txt
+
+# Copy large file
+cp large_file.pdf mount/
+
+# Delete file
+rm mount/test.txt
+```
+
+## 🔧 Configuration
+
+### Permissions Format
+Permissions use Unix octal notation (3 digits):
+- First digit: Owner permissions (r=4, w=2, x=1)
+- Second digit: Group permissions
+- Third digit: Others permissions
+
+Examples:
+- `644`: rw-r--r-- (owner read/write, others read)
+- `755`: rwxr-xr-x (owner all, others read/execute)
+- `600`: rw------- (owner read/write only)
+
+### Cache Configuration
+Client cache TTL: 300 seconds (5 minutes)
+- Modify `CacheValue::new()` in `client/src/fuse.rs` to adjust
+
+### Database Schema
+
+**USER Table:**
+```sql
+CREATE TABLE USER (
+    User_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+    Username TEXT NOT NULL UNIQUE,
+    Password TEXT NOT NULL
+);
+```
+
+**METADATA Table:**
+```sql
+CREATE TABLE METADATA (
+    File_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    user_id INTEGER,
+    user_permissions INTEGER,
+    group_permissions INTEGER,
+    others_permissions INTEGER,
+    size INTEGER,
+    created_at TEXT,
+    last_modified TEXT,
+    type INTEGER  -- 0=file, 1=directory
+);
+```
+
+## 🛠️ Troubleshooting
+
+### Unmount Stuck Filesystem
+```bash
+fusermount3 -u ./mount
+```
+
+### Check Daemon Status
+```bash
+# Check if running
+ps -p $(cat /tmp/myfs.pid)
+
+# Kill daemon
+kill $(cat /tmp/myfs.pid)
+
+# View errors
+cat /tmp/myfs.err
+```
+
+### Permission Denied Errors
+- Ensure user exists locally (created automatically on first login)
+- Check file ownership in database matches your user_id
+- Verify parent directory has write permissions for creation/deletion
+
+### Cache Issues
+- Cache invalidates after 300s automatically
+- For immediate refresh, restart client or use direct API calls
+
+## 🔐 Security Considerations
+
+⚠️ **This is an educational project. For production use:**
+
+1. Change JWT secret from hardcoded value
+2. Use HTTPS instead of HTTP
+3. Implement rate limiting
+4. Add input validation and sanitization
+5. Use environment variables for sensitive configuration
+6. Implement proper group permission handling
+7. Add audit logging
+
+## 📝 License
+
+This project is for educational purposes as part of a university course (Programmazione di Sistema).
+
+## 🤝 Contributing
+
+This is a university project, but suggestions and improvements are welcome.
+
+## 📚 Technologies Used
+
+- **Rust**: Systems programming language
+- **Axum**: Async web framework
+- **FUSE**: Filesystem in Userspace
+- **SQLite**: Embedded database
+- **JWT**: JSON Web Tokens for authentication
+- **bcrypt**: Password hashing
+- **Tokio**: Async runtime
+- **Reqwest**: HTTP client
+
+## 👥 Authors
+
+Alessandro Benvenuti - Politecnico di Torino
+Irene Bartolini - Politecnico di Torino

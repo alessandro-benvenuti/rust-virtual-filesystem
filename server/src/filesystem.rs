@@ -293,8 +293,6 @@ impl FileSystem {
             
         };
 
-        println!("🔐 Checking write permission for user {} in directory '{}'", user_id, normalized_path);
-
 
         // Verifica che la directory esista nel filesystem virtuale
         if self.find(&normalized_path).await.is_none() {
@@ -331,27 +329,22 @@ impl FileSystem {
                     let can_write = if owner_id == user_id {
                         // L'utente è il proprietario
                         let owner_can_write = (user_perms & 2) != 0;  // Bit 2 = write (-w-)
-                        println!("   Owner check: user_perms={}, can_write={}", user_perms, owner_can_write);
                         owner_can_write
                     } else {
                         // L'utente NON è il proprietario, usa permessi "others"
                         let others_can_write = (others_perms & 2) != 0;  // Bit 2 = write (--w)
-                        println!("   Others check: others_perms={}, can_write={}", others_perms, others_can_write);
                         others_can_write
                     };
 
                     if can_write {
-                        println!("✅ Write permission granted for user {} in '{}'", user_id, dir_path);
                         Ok(())
                     } else {
-                        println!("❌ Write permission denied for user {} in '{}'", user_id, dir_path);
                         Err(format!("Permission denied: no write access to directory '{}'", dir_path))
                     }
                 },
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // Directory esiste nel filesystem ma non nel database
                     // Assumiamo permessi di default per compatibilità
-                    println!("⚠️  Directory '{}' not found in metadata", normalized_path);
                     Err(format!("Database error checking permissions: {}", normalized_path))
                 },
                 Err(e) => {
@@ -360,7 +353,6 @@ impl FileSystem {
             }
         } else {
             // Nessuna connessione database, permetti l'operazione
-            println!("⚠️  No database connection, allowing mkdir for compatibility");
             Ok(())
         }
     }
@@ -372,7 +364,6 @@ impl FileSystem {
             dir_path.trim_start_matches('/').trim_end_matches('/').to_string()
         };
 
-        println!("🔐 Checking read permission for user {} in directory '{}'", user_id, normalized_path);
 
         // Verifica che la directory esista nel filesystem virtuale
         if self.find(&normalized_path).await.is_none() {
@@ -404,31 +395,24 @@ impl FileSystem {
                         return Err(format!("'{}' is not a directory", dir_path));
                     }
 
-                    // ✅ CONTROLLA: Permessi di lettura (bit 4) E execute (bit 1) sulla directory
+                    // CONTROLLA: Permessi di lettura (bit 4) E execute (bit 1) sulla directory
                     let can_access = if owner_id == user_id {
                         let owner_can_read = (user_perms & 4) != 0;  // Bit 4 = read (r--)
                         let owner_can_execute = (user_perms & 1) != 0;  // Bit 1 = execute (--x)
-                        println!("   Owner check: user_perms={}, can_read={}, can_execute={}", 
-                                user_perms, owner_can_read, owner_can_execute);
                         owner_can_read && owner_can_execute
                     } else {
                         let others_can_read = (others_perms & 4) != 0;  // Bit 4 = read (r--)
                         let others_can_execute = (others_perms & 1) != 0;  // Bit 1 = execute (--x)
-                        println!("   Others check: others_perms={}, can_read={}, can_execute={}", 
-                                others_perms, others_can_read, others_can_execute);
                         others_can_read && others_can_execute
                     };
 
                     if can_access {
-                        println!("✅ Read permission granted for user {} in '{}'", user_id, dir_path);
                         Ok(())
                     } else {
-                        println!("❌ Read permission denied for user {} in '{}'", user_id, dir_path);
                         Err(format!("Permission denied: no read access to directory '{}'", dir_path))
                     }
                 },
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    println!("⚠️  Directory '{}' not found in metadata", normalized_path);
                     Err(format!("Database error checking permissions: {}", normalized_path))
                 },
                 Err(e) => {
@@ -436,7 +420,6 @@ impl FileSystem {
                 }
             }
         } else {
-            println!("⚠️  No database connection, allowing list for compatibility");
             Ok(())
         }
     }
@@ -488,7 +471,6 @@ impl FileSystem {
                 match tokio::fs::metadata(&real_path).await {
                     Ok(meta) => meta.len() as i64,
                     Err(e) => {
-                        println!("Warning: failed to stat file '{}' at '{}': {:?}", full_path, real_path, e);
                         0
                     }
                 }
@@ -500,7 +482,6 @@ impl FileSystem {
             let mut stmt = match conn.prepare("SELECT COUNT(*) FROM METADATA WHERE path = ?1") {
                 Ok(s) => s,
                 Err(e) => {
-                    println!("DB prepare error for '{}': {:?}", full_path, e);
                     return Err(format!("DB prepare error: {}", e));
                 }
             };
@@ -508,7 +489,6 @@ impl FileSystem {
             let exists: bool = match stmt.query_row(params![full_path.clone()], |row| Ok(row.get::<_, i32>(0)? > 0)) {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("DB query_row error for '{}': {:?}", full_path, e);
                     return Err(format!("DB query error: {}", e));
                 }
             };
@@ -518,7 +498,6 @@ impl FileSystem {
                 let user_perms = (permissions >> 6) & 0o7;
                 let group_perms = (permissions >> 3) & 0o7;
                 let others_perms = permissions & 0o7;
-                println!("🐻🐻 Inserting metadata for '{}' size: {}", full_path, size_i64);
                 match conn.execute(
                     "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -535,10 +514,8 @@ impl FileSystem {
                     ],
                 ) {
                     Ok(_) => {
-                        println!("✅ Inserted metadata for '{}'", full_path);
                     }
                     Err(e) => {
-                        println!("DB insert error for '{}': {:?}", full_path, e);
                         return Err(format!("DB insert error: {}", e));
                     }
                 }
@@ -731,8 +708,6 @@ impl FileSystem {
 
 
     pub async fn list_contents_with_metadata(&self, dir_path: &str, requesting_user_id: i64) -> Result<Vec<FileInfo>, String> {
-        //  todo: come faccio a implementare una risposta NOTFOUND nel caso non ci sia la cartella. o un UNAUTHORIZED nel caso non si abbia il permesso in read per la cartella?
-        // println!("❓come faccio a implementare una risposta NOTFOUND nel caso non ci sia la cartella. E un UNAUTHORIZED nel caso non si abbia il permesso in read per la cartella?");
 
         // Controlla se la directory esiste nel filesystem virtuale
         let normalized_path = if dir_path == "/" || dir_path == "" {
@@ -918,7 +893,6 @@ impl FileSystem {
                     //     let permissions = if is_directory { "d?????????" } else { "-?????????" }.to_string();
                     //     ("?".to_string(), 0, "?".to_string(), "??? ?? ??:??".to_string())
                     // };
-                    println!("permessions: {}", permissions);
                     let file_info = FileInfo::new(
                         permissions,
                         display_owner,
@@ -928,7 +902,6 @@ impl FileSystem {
                         is_directory,
                     );
                     
-                    println!("✅ Lookup successful for '{}' by user {}", item_path, requesting_user_id);
                     Ok(file_info)
                 },
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
@@ -991,7 +964,7 @@ impl FileSystem {
 
         let full_path = self.full_path_for_node(&new_node).await;
         if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, permissions, true).await {
-            println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
+            
         }
 
         Ok(())
@@ -1032,13 +1005,8 @@ impl FileSystem {
         // Salva i metadati nel database
         if let Some(node) = self.find(&full_path).await {
             if let Err(e) = self.ensure_metadata_for_node(&node, user_id, perms_u16, true).await {
-                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
                 return Err(format!("Error: {}", e));
-            } else {
-                println!("✅ Directory metadata ensured: path='{}', user_id={}, permissions={}", full_path, user_id, permissions);
             }
-        } else {
-            println!("Warning: created dir '{}' but could not find node to ensure metadata", full_path);
         }
 
         Ok(())
@@ -1071,7 +1039,6 @@ impl FileSystem {
             if ensure{
                 let full_path = self.full_path_for_node(&new_node).await;
                 if let Err(e) = self.ensure_metadata_for_node(&new_node, user_id as i64, 0o644, false).await {
-                    println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
                 }
             }
 
@@ -1108,7 +1075,6 @@ impl FileSystem {
             // Ensure metadata exists for symlink (store as file type = 0)
             let full_path = self.full_path_for_node(&new_node).await;
             if let Err(e) = self.ensure_metadata_for_node(&new_node, 0, 0o644, false).await {
-                println!("Warning: Failed to ensure metadata for '{}': {}", full_path, e);
             }
 
             Ok(())
@@ -1175,7 +1141,6 @@ impl FileSystem {
 
             // Remove from the database
             if let Err(e) = self.remove_from_database(path, user_id).await {
-                println!("Warning: Failed to remove metadata from database: {}", e);
                 // Non blocco l'operazione se la rimozione dal database fallisce, si segnala solo un warning
             }
 
@@ -1203,7 +1168,6 @@ impl FileSystem {
             let conn = db.lock().await;
             let normalized_path = item_path.trim_start_matches('/');
             
-            println!("🗄️  Removing from database: '{}'", normalized_path);
             
             // Controlla se è una directory
             let mut stmt = conn.prepare(
@@ -1217,7 +1181,6 @@ impl FileSystem {
             match file_type {
                 Some(1) => {
                     // ✅ DIRECTORY: Verifica proprietà di tutti i contenuti ricorsivamente
-                    println!("📁 Removing directory and checking ownership of all contents");
                     
                     // ✅ TROVA: Tutti i file/directory contenuti con controllo proprietà
                     let mut contents_stmt = conn.prepare(
@@ -1250,7 +1213,6 @@ impl FileSystem {
                         let (content_path, content_owner_id) = 
                             content_result.map_err(|e| format!("Database error: {}", e))?;
                         
-                        println!("   📋 Found item: '{}', owner={}", content_path, content_owner_id);
                         
                         if content_owner_id != user_id {
                             return Err(format!(
@@ -1262,7 +1224,7 @@ impl FileSystem {
                         paths_to_delete.push(content_path);
                     }
                     
-                    // ✅ ELIMINA: Solo i file dell'utente (doppio controllo con WHERE user_id)
+                    // ELIMINA: Solo i file dell'utente (doppio controllo con WHERE user_id)
                     for path_to_delete in paths_to_delete {
                         let delete_result = conn.execute(
                             "DELETE FROM METADATA WHERE path = ?1 AND user_id = ?2",
@@ -1271,11 +1233,6 @@ impl FileSystem {
                         
                         match delete_result {
                             Ok(rows) => {
-                                if rows > 0 {
-                                    println!("   ✅ Deleted '{}' from database", path_to_delete);
-                                } else {
-                                    println!("   ⚠️  No rows deleted for '{}' (ownership changed?)", path_to_delete);
-                                }
                             },
                             Err(e) => {
                                 return Err(format!("Failed to delete '{}' from database: {}", path_to_delete, e));
@@ -1283,12 +1240,10 @@ impl FileSystem {
                         }
                     }
                     
-                    println!("✅ Successfully removed directory and all owned contents");
                     Ok(())
                 },
                 Some(0) => {
-                    // ✅ FILE: Elimina solo se appartiene all'utente
-                    println!("📄 Removing file from database (user {} owns it)", user_id);
+                    // FILE: Elimina solo se appartiene all'utente
                     
                     let delete_result = conn.execute(
                         "DELETE FROM METADATA WHERE path = ?1 AND user_id = ?2",
@@ -1298,7 +1253,6 @@ impl FileSystem {
                     match delete_result {
                         Ok(rows_affected) => {
                             if rows_affected > 0 {
-                                println!("✅ Removed file '{}' from database", normalized_path);
                                 Ok(())
                             } else {
                                 Err(format!("Failed to delete file '{}': no rows affected (permission issue?)", normalized_path))
@@ -1312,7 +1266,6 @@ impl FileSystem {
                 }
             }
         } else {
-            println!("⚠️  No database connection, skipping database removal");
             Ok(())
         }
     }
@@ -1336,11 +1289,9 @@ impl FileSystem {
                             } else {
                                 path.trim_start_matches('/').trim_end_matches('/').to_string()
                             };
-        println!("🐻🐻 path: {}, normalized: {}", path, normalized_path);
         let node = self.find(path);
         
         if let Some(n) = node.await {
-            println!("🐻🐻 File {} found, updating content", path);
             let lock = n.lock().await;
             match &*lock {
                 FSItem::File(_) => {
@@ -1369,14 +1320,12 @@ impl FileSystem {
                                 path.trim_start_matches('/').trim_end_matches('/').to_string()
                             };
 
-                            println!("UPDATE DB on file '{}' CONTENT SIZE: {}", normalized_path, content_size);
                             let result = conn.execute(
                                 "UPDATE METADATA SET size = ?1, last_modified = ?2 WHERE path = ?3",
                                 params![content_size, now, normalized_path],
                             );
 
                             if let Err(e) = result {
-                                println!("Warning: Failed to update file metadata: {}", e);
                                 // Non blocco l'operazione se l'update metadati fallisce
                             }
                         }
@@ -1390,7 +1339,6 @@ impl FileSystem {
             let path_buf = PathBuf::from(path);
             let parent_path = path_buf.parent().unwrap().to_str().unwrap();
             let file_name = path_buf.file_name().unwrap().to_str().unwrap();
-            println!("🐻🐻 File {} not found, creating new file", path);
             // Controlla i permessi di scrittura sulla directory parent
             self.check_dir_write_permission(parent_path, user_id).await?;
 
@@ -1434,7 +1382,6 @@ impl FileSystem {
                             } else {
                                 path.trim_start_matches('/').trim_end_matches('/').to_string()
                             };
-                            println!("🐻🐻🐻🐻 INSERT DB on file '{}' CONTENT SIZE: {}", normalized_path, content_size);
 
                             let result = conn.execute(
                                 "INSERT INTO METADATA (path, user_id, user_permissions, group_permissions, others_permissions, size, created_at, last_modified, type)
@@ -1453,7 +1400,6 @@ impl FileSystem {
                             );
 
                             if let Err(e) = result {
-                                println!("Warning: Failed to save file metadata: {}", e);
                                 // Non blocco l'operazione se il salvataggio metadati fallisce
                             }
                         }

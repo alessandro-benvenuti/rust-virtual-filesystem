@@ -366,5 +366,5 @@ This is a university project, but suggestions and improvements are welcome.
 
 ## 👥 Authors
 
-Alessandro Benvenuti - Politecnico di Torino
+Alessandro Benvenuti - Politecnico di Torino <br>
 Irene Bartolini - Politecnico di Torino

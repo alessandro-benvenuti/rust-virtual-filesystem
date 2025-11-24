@@ -45,8 +45,7 @@ struct LoginResponse {
 
 
 fn ensure_unmounted(mountpoint: &str) {
-// let _ = fs::remove_dir_all(mountpoint);
-// let _ = fs::create_dir_all(mountpoint);
+
     let status = Command::new("fusermount3")
         .arg("-u")
         .arg(mountpoint)
@@ -130,43 +129,6 @@ fn run_filesystem(
     ensure_unmounted(&mount_clone);
 }
 
-// === MOCK LOGIN SINCRONO (esempio) ===
-// fn do_login() -> Result<(String, String), Box<dyn std::error::Error>> {
-//     print!("Username: ");
-//     io::stdout().flush()?;
-//     let mut username = String::new();
-//     io::stdin().read_line(&mut username)?;
-//     let username = username.trim().to_string();
-
-//     print!("Password: ");
-//     io::stdout().flush()?;
-//     let password = rpassword::read_password().unwrap();
-
-//     // Esegue la chiamata HTTP sincrona tramite tokio
-//     let client = Client::new();
-//     let res = task::block_in_place(|| {
-//         let rt = tokio::runtime::Runtime::new().unwrap();
-//         rt.block_on(async {
-//             client.post("http://172.17.240.1:8080/auth/login")
-//                 .json(&LoginRequest { username: username.clone(), password })
-//                 .send()
-//                 .await
-//         })
-//     })?;
-
-//     if res.status().is_success() {
-//         let token: String = task::block_in_place(|| {
-//             let rt = tokio::runtime::Runtime::new().unwrap();
-//             rt.block_on(async {
-//                 let parsed: LoginResponse = res.json().await.unwrap();
-//                 parsed.token
-//             })
-//         });
-//         Ok((token, username))
-//     } else {
-//         Err("Login failed".into())
-//     }
-// }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     //args

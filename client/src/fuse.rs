@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-
 use users::cache;
 
 pub mod fuse_mod{
@@ -78,7 +77,6 @@ impl RemoteFS {
             uid,
             gid,
             write_buffers: HashMap::new(),
-            //read_buffers: HashMap::new(),
             cache,
         }
     }
@@ -190,16 +188,6 @@ impl Filesystem for RemoteFS {
                 }
         }
 
-        // if let Some(buf) = self.read_buffers.get(&ino) {
-        //     let start = offset.max(0) as usize;
-        //     let end = std::cmp::min(start + size as usize, buf.len());
-        //     if start >= buf.len() {
-        //         reply.data(&[]);
-        //     } else {
-        //         reply.data(&buf[start..end]);
-        //     }
-        //     return;
-        // }
         let client = BlockingClient::new();
         let token = self.token.clone();
         let base_url = self.base_url.trim_end_matches('/').to_string();
@@ -387,10 +375,6 @@ impl Filesystem for RemoteFS {
             format!("{}/{}", parent_path, name.to_str().unwrap())
         };
 
-        // println!("⚙️inodes: {:?}", self.inode_to_path);
-        // println!("💡paths to parent: {:?}", self.path_to_parent);
-        // println!("🧾cache keys: {:?}", self.cache.keys());
-
         let name_str = name.to_str().unwrap_or("");
         let is_spurious = name_str.chars().all(|c| c.is_numeric())
             || name_str.starts_with("drwx")
@@ -407,7 +391,7 @@ impl Filesystem for RemoteFS {
             return;
         }
 
-        println!("👀👀lookup(parent={}, name={:?})", parent, name);
+        println!("👀lookup(parent={}, name={:?})", parent, name);
 
         let cache_hit = self.get_cached_value(path.clone());
         if cache_hit.is_some(){
@@ -531,8 +515,8 @@ impl Filesystem for RemoteFS {
 
     reply.opened(0, 0); // handle fittizio = 0, flags = 0
     }
-       // create dummy: è necessaria per FUSe ma non chiama nessuna API
-    
+       
+    // create dummy: è necessaria per FUSe ma non chiama nessuna API
     fn create(
         &mut self,
         _req: &fuser::Request<'_>,
@@ -664,9 +648,7 @@ impl Filesystem for RemoteFS {
             
             match client.put(format!("{}/files/{}", base_url, path)).bearer_auth(token).body(body.clone()).send() {
                 Ok(r) if r.status().is_success() => {
-                    //read_buffer ERRORE
-
-                    // self.read_buffers.insert(ino, body.clone());
+            
                     let cv= self.get_cached_value(path.clone());
                     if cv.is_some(){
                         let mut cached= cv.unwrap().clone();
@@ -677,8 +659,6 @@ impl Filesystem for RemoteFS {
                     }
 
                     reply.ok();
-                    //NECESSARIO PER VISUALLIZZARE SUBITO I PDF invalidare gli inode
-                  //  fuser::notify_inval_inode(mountpoint, ino, 0, 0);
                 }
                 Ok(r) => {
                     println!("PUT returned HTTP {}", r.status());
@@ -763,7 +743,7 @@ impl Filesystem for RemoteFS {
             format!("{}/{}", newparent_path, newname.to_string_lossy())
         };
 
-        println!("\n 🏃🏃RENAME/MOVE: {} -> {}", old_path, new_path);
+        println!("\n 🏃RENAME/MOVE: {} -> {}", old_path, new_path);
 
         // tentativo server-side: fallback a copy+delete se non esiste endpoint move
         let client = BlockingClient::new();
@@ -772,7 +752,7 @@ impl Filesystem for RemoteFS {
         let src_url = format!("{}/files{}", base, old_path);
         let dst_url = format!("{}/files{}", base, new_path);
 
-        // 1) leggi sorgente
+        // leggi sorgente
         let data = match client.get(&src_url).bearer_auth(token.clone()).send() {
             Ok(r) if r.status().is_success() || r.status() == reqwest::StatusCode::PARTIAL_CONTENT => {
                 match r.bytes() {
@@ -796,7 +776,7 @@ impl Filesystem for RemoteFS {
             }
         };
 
-        // 2) scrivi destinazione
+        // scrivi destinazione
         match client.put(&dst_url).bearer_auth(token.clone()).body(data.clone()).send() {
             Ok(r) if r.status().is_success() => { /* ok */ }
             Ok(r) => {
@@ -811,10 +791,10 @@ impl Filesystem for RemoteFS {
             }
         }
 
-        // 3) delete sorgente (best-effort)
+        // delete sorgente (best-effort)
         let _ = client.delete(&src_url).bearer_auth(token).send();
 
-        // 4) aggiorna mappe locali e buffer/cache
+        // aggiorna mappe locali e buffer/cache
         // trova inode corrispondente al vecchio path (se esiste)
         let mut found_ino: Option<u64> = None;
         for (ino, path) in self.inode_to_path.iter_mut() {
@@ -830,10 +810,7 @@ impl Filesystem for RemoteFS {
             self.path_to_parent.remove(&old_path);
             self.path_to_parent.insert(new_path.clone(), newparent);
 
-            // sposta read/write buffers se presenti
-            // if let Some(rb) = self.read_buffers.remove(&ino) {
-            //     self.read_buffers.insert(ino, rb);
-            // }
+
             if let Some(wb) = self.write_buffers.remove(&ino) {
                 self.write_buffers.insert(ino, wb);
             }
@@ -849,9 +826,6 @@ impl Filesystem for RemoteFS {
             // se non avevamo inode locale, registra il nuovo path per future operazioni
             let _ = self.register_path(&new_path);
         }
-
-        // opzionale: invalidare cache kernel se disponibile (vedi discussione)
-        // fuser::notify::notify_inval_inode(&self.mountpoint, found_ino.unwrap_or(0), 0, 0);
 
         reply.ok();
     }

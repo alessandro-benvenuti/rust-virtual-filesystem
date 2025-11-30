@@ -15,6 +15,43 @@ A FUSE-based remote filesystem implementation in Rust that provides transparent 
 
 ## 🏗️ Architecture
 
+```mermaid
+graph TD
+    %% Sottografo Macchina Locale (In Alto)
+    subgraph Local_Machine ["💻 Local Machine (Linux)"]
+        direction TB
+        UserApp["User App (ls, cat)"] -- "Syscalls" --> VFS["Kernel VFS"]
+        VFS -- "Mount" --> FUSE["FUSE Driver"]
+        FUSE -- "IPC" --> RustClient["<b>Rust Client</b><br/>(crate: daemonize)"]
+        RustClient -.-> Cache[("&nbsp;&nbsp;Cache&nbsp;&nbsp;&nbsp;")]
+    end
+
+    %% Sottografo Rete (Al Centro)
+    subgraph Network_Zone ["☁️ Internet / Network"]
+        RustClient -- "HTTP Request<br/>(JWT Token)" --> AxumAPI(("Axum API"))
+    end
+
+    %% Sottografo Server Remoto (In Basso)
+    subgraph Remote_Server_Side ["🏢 Remote Server"]
+        direction TB
+        AxumAPI --> ServerLogic["<b>Axum Backend</b><br/>(Async Framework)"]
+        
+        %% Gestione Dati Server
+        ServerLogic -- "Auth & Metadata" --> SQLite[("SQLite DB<br/>(rusqlite)")]
+        ServerLogic -- "File Structure" --> MemTree["In-Memory Tree<br/>(Virtual FS)"]
+    end
+
+    %% Stili
+    classDef rust fill:#365,stroke:#cfc,stroke-width:2px,color:#fff;
+    class RustClient,ServerLogic rust;
+    
+    classDef storage fill:#444,stroke:#888,color:#fff;
+    class Cache,SQLite,MemTree storage;
+
+    style Network_Zone fill:transparent,stroke:#666,stroke-dasharray: 5 5,color:#fff;
+```
+
+
 ### Server (`/server`)
 - **Framework**: Axum (async web framework)
 - **Authentication**: JWT tokens with bcrypt password hashing
